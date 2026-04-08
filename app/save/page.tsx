@@ -1,89 +1,147 @@
 "use client";
 
-import { useEffect, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
+import { Suspense, useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 
-export default function Dashboard() {
-  const [threads, setThreads] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
+function SaveContent() {
+  const searchParams = useSearchParams();
+  const url = searchParams.get('url');
 
+  const [categories, setCategories] = useState<any[]>([]);
+  const [selectedCategoryId, setSelectedCategoryId] = useState('');
+  const [newCategoryName, setNewCategoryName] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
+  const [message, setMessage] = useState('');
+
+  // 抓取現有的分類
   useEffect(() => {
-    async function fetchSavedThreads() {
-      // 從資料庫抓取所有儲存的文章，並把分類名稱也一起抓出來
-      const { data, error } = await supabase
-        .from('saved_threads')
-        .select(`
-          *,
-          categories ( name )
-        `)
+    async function fetchCategories() {
+      const { data } = await supabase
+        .from('categories')
+        .select('*')
         .order('created_at', { ascending: false });
-
-      if (data) setThreads(data);
-      setLoading(false);
+      
+      if (data) setCategories(data);
     }
-    fetchSavedThreads();
+    fetchCategories();
   }, []);
 
-  if (loading) return <div className="p-10 text-center text-gray-500 font-bold">正在打開你的靈感庫...</div>;
+  // 儲存與呼叫 AI 的主要邏輯
+  const handleSave = async () => {
+    if (!url) return;
+    setIsSaving(true);
+    setMessage('處理中...');
+
+    let finalCategoryId = selectedCategoryId;
+
+    // 邏輯 1：處理建立新分類
+    if (newCategoryName) {
+      const { data: newCat, error: catError } = await supabase
+        .from('categories')
+        .insert([{ name: newCategoryName }])
+        .select()
+        .single();
+
+      if (newCat) {
+        finalCategoryId = newCat.id;
+      } else {
+        setMessage('建立分類失敗');
+        setIsSaving(false);
+        return;
+      }
+    }
+
+    if (!finalCategoryId) {
+      setMessage('⚠️ 請選擇或輸入一個分類！');
+      setIsSaving(false);
+      return;
+    }
+
+    // 邏輯 2：呼叫我們剛寫好的後端 API (包含爬蟲 + Gemini AI + 存資料庫)
+    setMessage('🤖 正在請 AI 閱讀文章並寫總結，請稍候...');
+
+    try {
+      const response = await fetch('/api/process', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: url, categoryId: finalCategoryId }),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        setMessage('❌ 處理失敗：' + result.error);
+      } else {
+        setMessage(`🎉 成功儲存！AI 總結：${result.summary}`);
+        setNewCategoryName('');
+      }
+    } catch (error) {
+      setMessage('❌ 發生網路連線錯誤，請重試。');
+    }
+    
+    setIsSaving(false);
+  };
 
   return (
-    <div className="min-h-screen bg-gray-50 p-4 md:p-8">
-      <div className="max-w-3xl mx-auto">
-        <header className="mb-8 flex justify-between items-end border-b pb-4">
-          <div>
-            <h1 className="text-3xl font-extrabold text-black mb-2">📥 Threads 蒐藏庫</h1>
-            <p className="text-gray-500 text-sm">由 AI 自動為你提煉精華</p>
-          </div>
-          <div className="bg-black text-white px-4 py-2 rounded-xl text-sm font-bold shadow-md">
-            共 {threads.length} 篇
-          </div>
-        </header>
-
-        <div className="grid gap-6">
-          {threads.map((item) => (
-            <div key={item.id} className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 hover:shadow-lg transition-all">
-              {/* 分類標籤與時間 */}
-              <div className="flex justify-between items-center mb-4">
-                <span className="bg-blue-100 text-blue-700 px-3 py-1 rounded-full text-xs font-bold">
-                  {item.categories?.name || '未分類'}
-                </span>
-                <span className="text-gray-400 text-xs font-medium">
-                  {new Date(item.created_at).toLocaleDateString('zh-TW')}
-                </span>
-              </div>
-              
-              {/* AI 總結區塊 */}
-              <div className="bg-gray-50 p-4 rounded-xl mb-4 border border-gray-100">
-                <h2 className="text-sm font-bold text-gray-700 mb-2 flex items-center gap-2">
-                  ✨ AI 總結摘要
-                </h2>
-                <p className="text-gray-700 text-sm leading-relaxed">
-                  {item.ai_summary || '這篇文章沒有總結內容。'}
-                </p>
-              </div>
-
-              {/* 原文連結 */}
-              <div className="flex justify-end">
-                <a 
-                  href={item.url} 
-                  target="_blank" 
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1 text-sm font-bold text-white bg-black px-4 py-2 rounded-lg hover:bg-gray-800 transition-colors"
-                >
-                  閱讀原文 ➔
-                </a>
-              </div>
-            </div>
-          ))}
-        </div>
-
-        {/* 如果還沒有文章的提示 */}
-        {threads.length === 0 && (
-          <div className="text-center py-20 bg-white rounded-3xl border-2 border-dashed border-gray-200 mt-10">
-            <p className="text-gray-500 font-medium">目前還沒有蒐藏任何文章喔！<br/>快用手機分享 Threads 過來吧！</p>
-          </div>
-        )}
+    <div className="p-8 max-w-md mx-auto mt-10 border rounded-xl shadow-lg bg-white text-black">
+      <h1 className="text-2xl font-bold mb-4">📥 蒐藏 Threads</h1>
+      <p className="mb-2 text-gray-600 text-sm">收到網址：</p>
+      <div className="p-3 bg-blue-50 text-blue-600 break-all rounded-lg text-xs mb-6">
+        {url || '尚未收到網址'}
       </div>
+
+      <div className="mb-4">
+        <label className="block text-sm font-bold text-gray-700 mb-2">1. 選擇現有分類</label>
+        <select
+          className="w-full border p-3 rounded-lg bg-gray-50"
+          value={selectedCategoryId}
+          onChange={(e) => setSelectedCategoryId(e.target.value)}
+          disabled={!!newCategoryName}
+        >
+          <option value="">-- 請選擇分類 --</option>
+          {categories.map((cat) => (
+            <option key={cat.id} value={cat.id}>{cat.name}</option>
+          ))}
+        </select>
+      </div>
+
+      <div className="mb-8">
+        <label className="block text-sm font-bold text-gray-700 mb-2">2. 或建立新分類</label>
+        <input
+          type="text"
+          placeholder="例如：技術文章、搞笑、美食..."
+          className="w-full border p-3 rounded-lg bg-gray-50"
+          value={newCategoryName}
+          onChange={(e) => {
+            setNewCategoryName(e.target.value);
+            setSelectedCategoryId('');
+          }}
+        />
+      </div>
+
+      <button
+        type="button"
+        onClick={handleSave}
+        disabled={isSaving || !url}
+        className="w-full bg-black text-white p-4 rounded-lg font-bold hover:bg-gray-800 disabled:bg-gray-300 transition-colors"
+      >
+        {isSaving ? '處理中...' : '儲存文章'}
+      </button>
+
+      {message && (
+        <div className="mt-4 p-3 bg-gray-100 rounded-lg text-center text-sm font-bold">
+          {message}
+        </div>
+      )}
     </div>
+  );
+}
+
+export default function SavePage() {
+  return (
+    <Suspense fallback={<div className="p-8 text-center">載入中...</div>}>
+      <SaveContent />
+    </Suspense>
   );
 }
