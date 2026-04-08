@@ -2,20 +2,19 @@
 
 import { useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useState } from 'react';
-import { supabase } from '@/lib/supabase'; // 引入我們做好的通訊兵
+import { supabase } from '@/lib/supabase';
 
 function SaveContent() {
   const searchParams = useSearchParams();
   const url = searchParams.get('url');
 
-  // 狀態管理
   const [categories, setCategories] = useState<any[]>([]);
   const [selectedCategoryId, setSelectedCategoryId] = useState('');
   const [newCategoryName, setNewCategoryName] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   const [message, setMessage] = useState('');
 
-  // 網頁載入時，去 Supabase 抓取現有的分類
+  // 抓取現有的分類
   useEffect(() => {
     async function fetchCategories() {
       const { data } = await supabase
@@ -28,15 +27,15 @@ function SaveContent() {
     fetchCategories();
   }, []);
 
-  // 按下儲存按鈕的動作
+  // 儲存與呼叫 AI 的主要邏輯
   const handleSave = async () => {
     if (!url) return;
     setIsSaving(true);
-    setMessage('儲存中...');
+    setMessage('處理中...');
 
     let finalCategoryId = selectedCategoryId;
 
-    // 邏輯 1：如果使用者輸入了「新分類」，先把它存進 categories 表單
+    // 邏輯 1：處理建立新分類
     if (newCategoryName) {
       const { data: newCat, error: catError } = await supabase
         .from('categories')
@@ -45,7 +44,7 @@ function SaveContent() {
         .single();
 
       if (newCat) {
-        finalCategoryId = newCat.id; // 拿到剛建好的新分類 ID
+        finalCategoryId = newCat.id;
       } else {
         setMessage('建立分類失敗');
         setIsSaving(false);
@@ -53,23 +52,32 @@ function SaveContent() {
       }
     }
 
-    // 防呆：如果沒選也沒填，就擋下來
     if (!finalCategoryId) {
       setMessage('⚠️ 請選擇或輸入一個分類！');
       setIsSaving(false);
       return;
     }
 
-    // 邏輯 2：把 Threads 網址跟分類 ID 存進 saved_threads 表單
-    const { error } = await supabase
-      .from('saved_threads')
-      .insert([{ url: url, category_id: finalCategoryId }]);
+    // 邏輯 2：呼叫我們剛寫好的後端 API (包含爬蟲 + Gemini AI + 存資料庫)
+    setMessage('🤖 正在請 AI 閱讀文章並寫總結，請稍候...');
 
-    if (error) {
-      setMessage('❌ 儲存失敗：' + error.message);
-    } else {
-      setMessage('🎉 成功儲存！現在可以關閉此網頁了。');
-      setNewCategoryName(''); // 清空輸入框
+    try {
+      const response = await fetch('/api/process', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: url, categoryId: finalCategoryId }),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        setMessage('❌ 處理失敗：' + result.error);
+      } else {
+        setMessage(`🎉 成功儲存！AI 總結：${result.summary}`);
+        setNewCategoryName('');
+      }
+    } catch (error) {
+      setMessage('❌ 發生網路連線錯誤，請重試。');
     }
     
     setIsSaving(false);
@@ -89,7 +97,7 @@ function SaveContent() {
           className="w-full border p-3 rounded-lg bg-gray-50"
           value={selectedCategoryId}
           onChange={(e) => setSelectedCategoryId(e.target.value)}
-          disabled={!!newCategoryName} // 如果有打新分類，就停用下拉選單
+          disabled={!!newCategoryName}
         >
           <option value="">-- 請選擇分類 --</option>
           {categories.map((cat) => (
@@ -107,12 +115,13 @@ function SaveContent() {
           value={newCategoryName}
           onChange={(e) => {
             setNewCategoryName(e.target.value);
-            setSelectedCategoryId(''); // 如果打字，就清空下拉選單
+            setSelectedCategoryId('');
           }}
         />
       </div>
 
       <button
+        type="button"
         onClick={handleSave}
         disabled={isSaving || !url}
         className="w-full bg-black text-white p-4 rounded-lg font-bold hover:bg-gray-800 disabled:bg-gray-300 transition-colors"
